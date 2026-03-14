@@ -16,7 +16,7 @@ router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # JWT Configuration
-SECRET_KEY = os.getenv("JWT_SECRET", "supersecretkey") # Change in production
+SECRET_KEY = os.getenv("JWT_SECRET", "fallback_secret_key_for_development") # Change in production
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = int(os.getenv("JWT_EXPIRE_MINUTES", "30"))
 
@@ -83,6 +83,30 @@ def register_user(user: schemas.UserCreate, db: Session = Depends(database.get_d
     db.add(new_user)
     db.commit()
     db.refresh(new_user)
+    
+    # Issue #4: Publish event to RabbitMQ
+    try:
+        import pika
+        import json
+        rabbitmq_url = os.getenv("RABBITMQ_URL", "amqp://guest:guest@localhost:5672/")
+        parameters = pika.URLParameters(rabbitmq_url)
+        connection = pika.BlockingConnection(parameters)
+        channel = connection.channel()
+        channel.queue_declare(queue='user.registered', durable=True)
+        channel.basic_publish(
+            exchange='',
+            routing_key='user.registered',
+            body=json.dumps({
+                "id": new_user.id,
+                "name": new_user.name,
+                "email": new_user.email,
+                "role": new_user.role
+            })
+        )
+        connection.close()
+    except Exception as e:
+        print(f"Failed to publish user.registered event: {e}")
+
     return {"message": "User created successfully"}
 
 @router.post("/login", response_model=schemas.Token)
